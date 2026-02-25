@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetTraffic Sentinel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+<style>
+/* ═══════════════════════════════════════════════════════
+   Design Direction: Industrial Data Terminal
+   Dark slate-green palette, monospaced data, precision UI
+   ═══════════════════════════════════════════════════════ */
+:root {
+  --ink:       #0a0f0d;
+  --surface:   #0f1612;
+  --card:      #141c18;
+  --card-hi:   #192420;
+  --border:    #1f2e28;
+  --border-hi: #2a4038;
+  --green:     #3ddc84;
+  --green-dim: #1a5c38;
+  --teal:      #00c8b4;
+  --amber:     #f5a623;
+  --red:       #ff5c5c;
+  --blue:      #4da6ff;
+  --text:      #c8ddd6;
+  --text-2:    #6b897e;
+  --text-3:    #2e4840;
+  --mono: 'IBM Plex Mono', monospace;
+  --sans: 'Syne', sans-serif;
+  --radius: 10px;
+  --glow: 0 0 24px rgba(61,220,132,0.12);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 14px; }
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--sans);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+
+/* noise grain overlay */
+body::before {
+  content: '';
+  position: fixed; inset: 0; z-index: 999; pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  opacity: 0.6;
+}
+
+/* ── Layout ── */
+.app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
+
+/* ── Header ── */
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 28px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky; top: 0; z-index: 100;
+}
+
+.brand { display: flex; align-items: center; gap: 14px; }
+
+.brand-mark {
+  width: 36px; height: 36px;
+  border: 1.5px solid var(--green);
+  border-radius: 8px;
+  display: grid; place-items: center;
+  position: relative;
+  box-shadow: var(--glow);
+}
+
+.brand-mark::before {
+  content: '';
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 12px var(--green);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse { 0%,100% { opacity:1; transform:scale(1) } 50% { opacity:.4; transform:scale(.8) } }
+
+.brand-name {
+  font-family: var(--sans);
+  font-size: 15px; font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.brand-sub {
+  font-family: var(--mono);
+  font-size: 10px; color: var(--text-2);
+  letter-spacing: .5px;
+  margin-top: 1px;
+}
+
+.header-right {
+  display: flex; align-items: center; gap: 20px;
+}
+
+.live-badge {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--green-dim);
+  border-radius: 4px;
+  background: rgba(61,220,132,0.06);
+}
+
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.live-text {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--green); letter-spacing: 1px;
+}
+
+.clock {
+  font-family: var(--mono); font-size: 13px;
+  color: var(--text-2); letter-spacing: 1px;
+}
+
+/* ── Main ── */
+main { padding: 24px 28px; display: flex; flex-direction: column; gap: 20px; }
+
+/* ── Section titles ── */
+.section-label {
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--text-3); margin-bottom: 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+.section-label::after { content:''; flex:1; height:1px; background: var(--border); }
+
+/* ── Summary cards row ── */
+.summary-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.stat-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  position: relative; overflow: hidden;
+  transition: border-color .2s, box-shadow .2s;
+  cursor: default;
+}
+
+.stat-card:hover { border-color: var(--border-hi); box-shadow: var(--glow); }
+
+.stat-card::after {
+  content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px;
+}
+
+.stat-card.s-today-total::after  { background: linear-gradient(90deg, var(--green), var(--teal)); }
+.stat-card.s-month-total::after  { background: linear-gradient(90deg, var(--blue), var(--teal)); }
+.stat-card.s-year-total::after   { background: linear-gradient(90deg, var(--amber), var(--red)); }
+.stat-card.s-today-up::after     { background: linear-gradient(90deg, var(--amber), transparent); }
+.stat-card.s-today-down::after   { background: linear-gradient(90deg, var(--teal), transparent); }
+.stat-card.s-month-up::after     { background: linear-gradient(90deg, var(--amber), transparent); }
+.stat-card.s-month-down::after   { background: linear-gradient(90deg, var(--teal), transparent); }
+
+.stat-label {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--text-2); letter-spacing: 1.5px;
+  text-transform: uppercase; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px;
+}
+
+.stat-label .icon { font-size: 12px; }
+
+.stat-value {
+  font-family: var(--mono); font-size: 24px;
+  color: var(--text); letter-spacing: -.5px;
+  line-height: 1.2;
+}
+
+.stat-value.lg { font-size: 28px; }
+
+.stat-sub {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--text-3); margin-top: 6px;
+}
+
+.stat-sub span { color: var(--amber); margin-right: 4px; }
+
+/* ── Speed row (mini, secondary) ── */
+.speed-mini {
+  display: flex; align-items: center; gap: 24px;
+  padding: 10px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.speed-item {
+  display: flex; align-items: baseline; gap: 6px;
+  font-family: var(--mono); font-size: 12px; color: var(--text-2);
+}
+
+.speed-item .val { font-size: 16px; font-weight: 500; }
+.speed-item .val.up   { color: var(--amber); }
+.speed-item .val.down { color: var(--teal); }
+
+.speed-divider { width: 1px; height: 20px; background: var(--border); }
+
+/* ── Two-column layout ── */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+
+/* ── Panel ── */
+.panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  position: relative;
+}
+
+.panel-title {
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--text-2); margin-bottom: 16px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+.panel-badge {
+  padding: 2px 7px;
+  background: rgba(61,220,132,0.08);
+  border: 1px solid var(--green-dim);
+  border-radius: 3px; color: var(--green);
+  font-size: 9px; letter-spacing: 1px;
+}
+
+.panel-badge.amber {
+  background: rgba(245,166,35,0.08);
+  border-color: rgba(245,166,35,0.3);
+  color: var(--amber);
+}
+
+/* ── Chart containers ── */
+.chart-wrap { width: 100%; }
+.h-240 { height: 240px; }
+.h-280 { height: 280px; }
+.h-320 { height: 320px; }
+
+/* ══════════════════════════════════════════════════════
+   DATE RANGE FILTER — the hero feature
+   ══════════════════════════════════════════════════════ */
+.query-panel {
+  background: var(--card);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  box-shadow: 0 2px 20px rgba(0,0,0,0.3);
+}
+
+.query-panel-title {
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--green); margin-bottom: 16px;
+  display: flex; align-items: center; gap: 8px;
+}
+
+.query-panel-title::before {
+  content: ''; width: 8px; height: 8px;
+  background: var(--green); border-radius: 50%;
+  box-shadow: 0 0 8px var(--green);
+}
+
+.query-controls {
+  display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap;
+}
+
+.query-field { display: flex; flex-direction: column; gap: 5px; }
+
+.query-field label {
+  font-family: var(--mono); font-size: 9px;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.query-input {
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-family: var(--mono); font-size: 13px;
+  outline: none;
+  transition: border-color .2s, box-shadow .2s;
+  height: 36px;
+  min-width: 130px;
+}
+
+.query-input:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(61,220,132,0.1);
+}
+
+/* Custom date input styling for webkit */
+.query-input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7) sepia(1) hue-rotate(100deg) saturate(3);
+  cursor: pointer;
+  opacity: .6;
+}
+
+.gran-group {
+  display: flex; gap: 0;
+}
+
+.gran-btn {
+  background: var(--ink);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 1px;
+  padding: 0 14px; height: 36px;
+  cursor: pointer;
+  transition: all .15s;
+}
+
+.gran-btn:first-child { border-radius: 6px 0 0 6px; }
+.gran-btn:last-child  { border-radius: 0 6px 6px 0; }
+.gran-btn:not(:first-child) { border-left: none; }
+
+.gran-btn:hover  { background: var(--card-hi); color: var(--text); }
+
+.gran-btn.active {
+  background: rgba(61,220,132,0.12);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.shortcut-row {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-top: 12px; align-items: center;
+}
+
+.shortcut-row .lbl {
+  font-family: var(--mono); font-size: 9px;
+  color: var(--text-3); letter-spacing: 1px;
+  margin-right: 4px;
+}
+
+.shortcut-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: .5px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all .15s;
+}
+
+.shortcut-btn:hover {
+  border-color: var(--green-dim);
+  color: var(--text);
+  background: rgba(61,220,132,0.06);
+}
+
+.query-btn {
+  background: rgba(61,220,132,0.1);
+  border: 1px solid var(--green);
+  color: var(--green);
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  padding: 0 20px; height: 36px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .15s;
+  display: flex; align-items: center; gap: 6px;
+}
+
+.query-btn:hover {
+  background: rgba(61,220,132,0.18);
+  box-shadow: var(--glow);
+}
+
+.query-btn:active { transform: scale(.97); }
+
+/* ── Query result summary ── */
+.query-result-bar {
+  display: flex; align-items: center; gap: 20px;
+  padding: 12px 16px;
+  background: rgba(61,220,132,0.05);
+  border: 1px solid var(--green-dim);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.qr-item { display: flex; flex-direction: column; gap: 3px; }
+
+.qr-label {
+  font-family: var(--mono); font-size: 9px;
+  color: var(--text-3); letter-spacing: 1.5px; text-transform: uppercase;
+}
+
+.qr-value {
+  font-family: var(--mono); font-size: 18px;
+  font-weight: 500;
+}
+
+.qr-value.total { color: var(--green); }
+.qr-value.up    { color: var(--amber); }
+.qr-value.down  { color: var(--teal); }
+
+.qr-divider { width:1px; height:36px; background: var(--border); }
+
+.qr-period {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--text-2); margin-left: auto;
+}
+
+/* ── TOP IP table ── */
+.ip-table { width: 100%; border-collapse: collapse; }
+
+.ip-table th {
+  font-family: var(--mono); font-size: 9px;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--text-3); text-align: left;
+  padding: 0 10px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ip-table td {
+  padding: 9px 10px;
+  font-family: var(--mono); font-size: 12px;
+  border-bottom: 1px solid rgba(31,46,40,.5);
+}
+
+.ip-table tr:last-child td { border-bottom: none; }
+.ip-table tr:hover td { background: rgba(61,220,132,0.03); }
+
+.ip-rank { color: var(--text-3); width: 28px; }
+.ip-rank.gold   { color: var(--amber); }
+.ip-rank.silver { color: #aaa; }
+.ip-rank.bronze { color: #cd7f32; }
+.ip-addr { color: var(--blue); }
+.ip-bytes { color: var(--text-2); text-align: right; }
+.ip-bar-wrap { width: 100px; }
+.ip-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.ip-bar-fill { height: 100%; background: linear-gradient(90deg, var(--teal), var(--blue)); transition: width .6s ease; }
+
+/* ── 24h breakdown table (今日小时) ── */
+.hour-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 3px;
+}
+
+.hour-cell {
+  border-radius: 3px;
+  padding: 6px 2px;
+  text-align: center;
+  position: relative;
+  cursor: default;
+}
+
+.hour-cell .h-lbl {
+  font-family: var(--mono); font-size: 8px;
+  color: var(--text-3); display: block;
+}
+
+.hour-cell .h-bar-wrap {
+  height: 28px; display: flex; align-items: flex-end;
+  justify-content: center; gap: 1px; margin: 3px 0 2px;
+}
+
+.hour-bar {
+  width: 4px; border-radius: 1px;
+  min-height: 2px; transition: height .4s ease;
+}
+
+.hour-bar.up-bar   { background: var(--amber); }
+.hour-bar.down-bar { background: var(--teal); }
+
+.hour-cell .h-val {
+  font-family: var(--mono); font-size: 8px;
+  color: var(--text-2); display: block;
+}
+
+/* ── Loading state ── */
+.skeleton {
+  background: linear-gradient(90deg, var(--card), var(--card-hi), var(--card));
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 4px;
+  height: 28px;
+}
+
+@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--ink); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hi); }
+
+/* ── Footer ── */
+footer {
+  padding: 14px 28px;
+  border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+}
+
+footer .fl, footer .fr {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--text-3); letter-spacing: .5px;
+}
+
+/* ── Responsive ── */
+@media (max-width: 1100px) {
+  .summary-row { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 800px) {
+  .two-col, .three-col { grid-template-columns: 1fr; }
+  .summary-row { grid-template-columns: 1fr 1fr; }
+  .query-controls { flex-direction: column; align-items: stretch; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ══ HEADER ══════════════════════════════════════════════════════════════ -->
+<header>
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <div>
+      <div class="brand-name">NetTraffic Sentinel</div>
+      <div class="brand-sub">PUBLIC NETWORK TRAFFIC MONITOR</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="speed-mini" id="speed-mini">
+      <div class="speed-item">
+        <span>▲</span>
+        <span class="val up" id="hdr-up">--</span>
+        <span id="hdr-up-u">--</span>
+      </div>
+      <div class="speed-divider"></div>
+      <div class="speed-item">
+        <span>▼</span>
+        <span class="val down" id="hdr-down">--</span>
+        <span id="hdr-down-u">--</span>
+      </div>
+    </div>
+    <div class="live-badge">
+      <span class="live-dot"></span>
+      <span class="live-text">LIVE</span>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</header>
+
+<!-- ══ MAIN ════════════════════════════════════════════════════════════════ -->
+<main>
+
+  <!-- ① SUMMARY CARDS -->
+  <div>
+    <div class="section-label">流量总览</div>
+    <div class="summary-row">
+      <div class="stat-card s-today-total">
+        <div class="stat-label"><span class="icon">◈</span> 今日总流量</div>
+        <div class="stat-value lg" id="s-today-total">--</div>
+        <div class="stat-sub"><span>▲</span><span id="s-today-up">--</span> &nbsp; <span>▼</span><span id="s-today-down">--</span></div>
+      </div>
+      <div class="stat-card s-month-total">
+        <div class="stat-label"><span class="icon">◈</span> 本月总流量</div>
+        <div class="stat-value lg" id="s-month-total">--</div>
+        <div class="stat-sub"><span>▲</span><span id="s-month-up">--</span> &nbsp; <span>▼</span><span id="s-month-down">--</span></div>
+      </div>
+      <div class="stat-card s-year-total">
+        <div class="stat-label"><span class="icon">◈</span> 本年总流量</div>
+        <div class="stat-value lg" id="s-year-total">--</div>
+        <div class="stat-sub" id="s-year-sub">--年累计</div>
+      </div>
+      <div class="stat-card" style="display:flex;flex-direction:column;justify-content:space-between;border-color:var(--border-hi)">
+        <div>
+          <div class="stat-label">今日上行</div>
+          <div class="stat-value" id="s-up2">--</div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:12px">
+          <div class="stat-label">今日下行</div>
+          <div class="stat-value" id="s-down2">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② DATE RANGE QUERY PANEL (HERO) -->
+  <div class="query-panel">
+    <div class="query-panel-title">自定义日期查询</div>
+    <div class="query-controls">
+      <div class="query-field">
+        <label>开始日期</label>
+        <input type="date" class="query-input" id="q-start">
+      </div>
+      <div style="padding-bottom:8px;color:var(--text-3);font-family:var(--mono)">→</div>
+      <div class="query-field">
+        <label>结束日期</label>
+        <input type="date" class="query-input" id="q-end">
+      </div>
+      <div class="query-field">
+        <label>统计粒度</label>
+        <div class="gran-group">
+          <button class="gran-btn" data-gran="hour">小时</button>
+          <button class="gran-btn active" data-gran="day">按天</button>
+          <button class="gran-btn" data-gran="month">按月</button>
+        </div>
+      </div>
+      <button class="query-btn" id="query-btn" onclick="runQuery()">
+        <span>▶</span> 查询
+      </button>
+    </div>
+    <div class="shortcut-row">
+      <span class="lbl">快捷：</span>
+      <button class="shortcut-btn" onclick="setShortcut('today')">今天</button>
+      <button class="shortcut-btn" onclick="setShortcut('yesterday')">昨天</button>
+      <button class="shortcut-btn" onclick="setShortcut('7days')">近7天</button>
+      <button class="shortcut-btn" onclick="setShortcut('30days')">近30天</button>
+      <button class="shortcut-btn" onclick="setShortcut('thisMonth')">本月</button>
+      <button class="shortcut-btn" onclick="setShortcut('lastMonth')">上月</button>
+      <button class="shortcut-btn" onclick="setShortcut('thisYear')">今年</button>
+    </div>
+
+    <!-- Query result area -->
+    <div id="query-result" style="display:none;margin-top:16px">
+      <div class="query-result-bar" id="qr-bar">
+        <div class="qr-item">
+          <span class="qr-label">总流量</span>
+          <span class="qr-value total" id="qr-total">--</span>
+        </div>
+        <div class="qr-divider"></div>
+        <div class="qr-item">
+          <span class="qr-label">▲ 上行</span>
+          <span class="qr-value up" id="qr-up">--</span>
+        </div>
+        <div class="qr-divider"></div>
+        <div class="qr-item">
+          <span class="qr-label">▼ 下行</span>
+          <span class="qr-value down" id="qr-down">--</span>
+        </div>
+        <div class="qr-period" id="qr-period">--</div>
+      </div>
+      <div class="chart-wrap h-280" id="chart-query"></div>
+    </div>
+  </div>
+
+  <!-- ③ HISTORY CHARTS row -->
+  <div class="two-col">
+    <div class="panel">
+      <div class="panel-title">最近30天 <span class="panel-badge">DAILY</span></div>
+      <div class="chart-wrap h-280" id="chart-30days"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">近12个月 <span class="panel-badge">MONTHLY</span></div>
+      <div class="chart-wrap h-280" id="chart-12months"></div>
+    </div>
+  </div>
+
+  <!-- ④ TODAY HOURLY + TOP IPs -->
+  <div class="two-col">
+    <div class="panel">
+      <div class="panel-title">今日24小时分布 <span class="panel-badge amber" id="today-lbl">--</span></div>
+      <div id="today-hours-container">
+        <div class="chart-wrap h-240" id="chart-today-hours"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">公网IP流量排行 <span class="panel-badge">TOP 10</span></div>
+      <div id="top-ips-container"><div style="padding:20px;font-family:var(--mono);font-size:11px;color:var(--text-3)">LOADING...</div></div>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  <div class="fl">NETTRAFFIC-SENTINEL &nbsp;·&nbsp; PUBLIC IP ONLY &nbsp;·&nbsp; SQLITE WAL</div>
+  <div class="fr" id="last-update">UPDATED: --</div>
+</footer>
+
+</div><!-- .app -->
+
+<script>
+/* ═══════════════════════════════════════════════════
+   Utilities
+   ═══════════════════════════════════════════════════ */
+const C = {
+  green:'#3ddc84', teal:'#00c8b4', amber:'#f5a623',
+  red:'#ff5c5c', blue:'#4da6ff',
+  text:'#c8ddd6', text2:'#6b897e', text3:'#2e4840',
+  grid:'rgba(31,46,40,0.8)', bg:'transparent',
+  mono: 'IBM Plex Mono'
+};
+
+function fmtBytes(b, d=2) {
+  if (!b || b===0) return '0 B';
+  const units=['B','KB','MB','GB','TB'];
+  const i = Math.floor(Math.log(Math.max(b,1)) / Math.log(1024));
+  return (b/Math.pow(1024,i)).toFixed(d) + ' ' + units[Math.min(i,4)];
+}
+
+function fmtBytesShort(b) {
+  if (!b || b===0) return '0';
+  const units=['','K','M','G','T'];
+  const i = Math.floor(Math.log(Math.max(b,1)) / Math.log(1024));
+  return (b/Math.pow(1024,i)).toFixed(1) + units[Math.min(i,4)];
+}
+
+function fmtSpeed(bps) {
+  if (!bps || bps===0) return ['0.0','B/s'];
+  const Bps = bps/8;
+  if (Bps<1024) return [Bps.toFixed(1),'B/s'];
+  if (Bps<1024*1024) return [(Bps/1024).toFixed(2),'KB/s'];
+  if (Bps<1024*1024*1024) return [(Bps/1024/1024).toFixed(2),'MB/s'];
+  return [(Bps/1024/1024/1024).toFixed(2),'GB/s'];
+}
+
+const baseAxisOpts = {
+  axisLine:{ lineStyle:{ color: C.text3 } },
+  axisTick:{ lineStyle:{ color: C.text3 } },
+  axisLabel:{ color: C.text2, fontFamily: C.mono, fontSize: 10 },
+  splitLine:{ lineStyle:{ color: C.grid, type:'dashed' } },
+};
+
+const baseTooltipOpts = {
+  backgroundColor:'#0f1612ee',
+  borderColor:'#1f2e28',
+  textStyle:{ color: C.text, fontFamily: C.mono, fontSize: 12 },
+  extraCssText: 'border-radius:6px; box-shadow:0 4px 20px rgba(0,0,0,0.5);'
+};
+
+function barSeries(name, data, color, stack='s') {
+  return {
+    name, type:'bar', data, stack,
+    itemStyle:{ color:{ type:'linear',x:0,y:0,x2:0,y2:1,
+      colorStops:[{offset:0,color:color+'dd'},{offset:1,color:color+'44'}] },
+      borderRadius:[2,2,0,0] },
+    emphasis:{ focus:'series' }
+  };
+}
+
+function lineSeries(name, data, color) {
+  return {
+    name, type:'line', data, smooth: true, symbol:'none',
+    lineStyle:{ color, width:2 },
+    areaStyle:{ color:{ type:'linear',x:0,y:0,x2:0,y2:1,
+      colorStops:[{offset:0,color:color+'44'},{offset:1,color:color+'05'}] } }
+  };
+}
+
+const sharedLegend = {
+  data:[{name:'上行',icon:'rect'},{name:'下行',icon:'rect'}],
+  top:0, right:0,
+  textStyle:{ color: C.text2, fontFamily: C.mono, fontSize:10 },
+  itemWidth:10, itemHeight:6,
+};
+
+/* ═══════════════════════════════════════════════════
+   Clock
+   ═══════════════════════════════════════════════════ */
+function tick() {
+  const n=new Date();
+  document.getElementById('clock').textContent =
+    `${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}:${String(n.getSeconds()).padStart(2,'0')}`;
+}
+setInterval(tick,1000); tick();
+
+/* ═══════════════════════════════════════════════════
+   Date helpers
+   ═══════════════════════════════════════════════════ */
+function today() { return new Date().toISOString().slice(0,10); }
+
+function daysAgo(n) {
+  const d=new Date(); d.setDate(d.getDate()-n);
+  return d.toISOString().slice(0,10);
+}
+
+function monthStart(offset=0) {
+  const d=new Date();
+  d.setDate(1); d.setMonth(d.getMonth()+offset);
+  return d.toISOString().slice(0,10);
+}
+
+function monthEnd(offset=0) {
+  const d=new Date();
+  d.setDate(1); d.setMonth(d.getMonth()+1+offset); d.setDate(0);
+  return d.toISOString().slice(0,10);
+}
+
+function setShortcut(key) {
+  const shortcuts = {
+    today:     [today(), today()],
+    yesterday: [daysAgo(1), daysAgo(1)],
+    '7days':   [daysAgo(6), today()],
+    '30days':  [daysAgo(29), today()],
+    thisMonth: [monthStart(0), today()],
+    lastMonth: [monthStart(-1), monthEnd(-1)],
+    thisYear:  [new Date().getFullYear()+'-01-01', today()],
+  };
+  const [s,e] = shortcuts[key] || [today(), today()];
+  document.getElementById('q-start').value = s;
+  document.getElementById('q-end').value   = e;
+
+  // auto-pick granularity
+  const days = (new Date(e)-new Date(s))/(86400000)+1;
+  let gran = 'day';
+  if (days <= 2) gran = 'hour';
+  else if (days > 60) gran = 'month';
+  setGran(gran);
+}
+
+/* ═══════════════════════════════════════════════════
+   Granularity toggle
+   ═══════════════════════════════════════════════════ */
+let activeGran = 'day';
+document.querySelectorAll('.gran-btn').forEach(btn => {
+  btn.addEventListener('click', () => setGran(btn.dataset.gran));
+});
+
+function setGran(g) {
+  activeGran = g;
+  document.querySelectorAll('.gran-btn').forEach(b => b.classList.toggle('active', b.dataset.gran===g));
+}
+
+/* ═══════════════════════════════════════════════════
+   QUERY CHART
+   ═══════════════════════════════════════════════════ */
+let queryChart = null;
+
+async function runQuery() {
+  const start = document.getElementById('q-start').value;
+  const end   = document.getElementById('q-end').value;
+  if (!start || !end) return;
+
+  document.getElementById('query-btn').textContent = '⏳ 查询中…';
+
+  try {
+    const res = await fetch(`/api/query?start=${start}&end=${end}&granularity=${activeGran}`);
+    const data = await res.json();
+
+    document.getElementById('query-result').style.display = 'block';
+
+    // summary bar
+    const s = data.summary;
+    document.getElementById('qr-total').textContent = fmtBytes(s.total_bytes);
+    document.getElementById('qr-up').textContent    = fmtBytes(s.up_bytes);
+    document.getElementById('qr-down').textContent  = fmtBytes(s.down_bytes);
+    document.getElementById('qr-period').textContent = `${start}  →  ${end}`;
+
+    // chart
+    if (!queryChart) {
+      queryChart = echarts.init(document.getElementById('chart-query'));
+    }
+
+    const series = data.series || [];
+    let xKey = activeGran==='hour' ? 'hour_ts' : activeGran==='month' ? 'month' : 'day';
+    const labels = series.map(r => {
+      const v = r[xKey] || r.day || r.month || r.hour_ts || '';
+      if (activeGran==='hour') return v.slice(11,16);
+      if (activeGran==='month') return v;
+      return v.slice(5); // MM-DD
+    });
+    const ups   = series.map(r => r.up_bytes   || 0);
+    const downs = series.map(r => r.down_bytes  || 0);
+
+    const isLine = activeGran==='hour';
+
+    queryChart.setOption({
+      backgroundColor: 'transparent',
+      legend: sharedLegend,
+      tooltip: {
+        ...baseTooltipOpts,
+        trigger:'axis',
+        formatter: params => {
+          let s = `<div style="color:${C.text2};margin-bottom:4px">${params[0]?.axisValue||''}</div>`;
+          params.forEach(p => {
+            s += `<div style="color:${p.seriesIndex===0?C.amber:C.teal}">${p.seriesName}: ${fmtBytes(p.value)}</div>`;
+          });
+          return s;
+        }
+      },
+      grid:{ top:30, bottom:36, left:70, right:16, containLabel:false },
+      xAxis:{ type:'category', data:labels, boundaryGap:!isLine,
+        ...baseAxisOpts, splitLine:{show:false},
+        axisLabel:{...baseAxisOpts.axisLabel, rotate: labels.length>20?30:0} },
+      yAxis:{ type:'value', ...baseAxisOpts,
+        axisLabel:{...baseAxisOpts.axisLabel, formatter:v=>fmtBytesShort(v)} },
+      series: isLine
+        ? [lineSeries('上行',ups,C.amber), lineSeries('下行',downs,C.teal)]
+        : [barSeries('上行',ups,C.amber,'s'), barSeries('下行',downs,C.teal,'s')]
+    }, true);
+
+  } catch(e) { console.error(e); }
+
+  document.getElementById('query-btn').innerHTML = '<span>▶</span> 查询';
+}
+
+/* ═══════════════════════════════════════════════════
+   CHART: 30 days
+   ═══════════════════════════════════════════════════ */
+const chart30 = echarts.init(document.getElementById('chart-30days'));
+
+function renderChart30(days) {
+  const labels = days.map(d=>d.day.slice(5));
+  chart30.setOption({
+    backgroundColor:'transparent', legend:sharedLegend,
+    tooltip:{...baseTooltipOpts,trigger:'axis',
+      formatter:p=>`<div style="color:${C.text2}">${days[p[0]?.dataIndex]?.day||''}</div>`
+        +p.map(pp=>`<div style="color:${pp.seriesIndex===0?C.amber:C.teal}">${pp.seriesName}: ${fmtBytes(pp.value)}</div>`).join('')
+    },
+    grid:{top:28,bottom:38,left:68,right:16,containLabel:false},
+    xAxis:{type:'category',data:labels,boundaryGap:true,...baseAxisOpts,
+      splitLine:{show:false},axisLabel:{...baseAxisOpts.axisLabel,rotate:labels.length>20?30:0}},
+    yAxis:{type:'value',...baseAxisOpts,
+      axisLabel:{...baseAxisOpts.axisLabel,formatter:v=>fmtBytesShort(v)}},
+    series:[
+      barSeries('上行',days.map(d=>d.up_bytes||0),C.amber,'s'),
+      barSeries('下行',days.map(d=>d.down_bytes||0),C.teal,'s'),
+    ]
+  }, true);
+}
+
+/* ═══════════════════════════════════════════════════
+   CHART: 12 months
+   ═══════════════════════════════════════════════════ */
+const chart12m = echarts.init(document.getElementById('chart-12months'));
+
+function renderChart12m(months) {
+  chart12m.setOption({
+    backgroundColor:'transparent', legend:sharedLegend,
+    tooltip:{...baseTooltipOpts,trigger:'axis',
+      formatter:p=>`<div style="color:${C.text2}">${p[0]?.axisValue||''}</div>`
+        +p.map(pp=>`<div style="color:${pp.seriesIndex===0?C.amber:C.teal}">${pp.seriesName}: ${fmtBytes(pp.value)}</div>`).join('')
+    },
+    grid:{top:28,bottom:36,left:68,right:16,containLabel:false},
+    xAxis:{type:'category',data:months.map(m=>m.month),boundaryGap:true,
+      ...baseAxisOpts,splitLine:{show:false}},
+    yAxis:{type:'value',...baseAxisOpts,
+      axisLabel:{...baseAxisOpts.axisLabel,formatter:v=>fmtBytesShort(v)}},
+    series:[
+      barSeries('上行',months.map(m=>m.up_bytes||0),C.amber,'s'),
+      barSeries('下行',months.map(m=>m.down_bytes||0),C.teal,'s'),
+    ]
+  }, true);
+}
+
+/* ═══════════════════════════════════════════════════
+   CHART: Today hours
+   ═══════════════════════════════════════════════════ */
+const chartHours = echarts.init(document.getElementById('chart-today-hours'));
+
+function renderTodayHours(hours) {
+  // 补全0-23所有小时
+  const map = {};
+  hours.forEach(h => {
+    const key = h.hour_ts.slice(11,13); // "HH"
+    map[key] = h;
+  });
+  const labels=[], ups=[], downs=[];
+  for(let i=0;i<24;i++){
+    const k=String(i).padStart(2,'0');
+    labels.push(k+':00');
+    ups.push(map[k]?.up_bytes||0);
+    downs.push(map[k]?.down_bytes||0);
+  }
+  chartHours.setOption({
+    backgroundColor:'transparent', legend:{...sharedLegend},
+    tooltip:{...baseTooltipOpts,trigger:'axis',
+      formatter:p=>`<div style="color:${C.text2}">${p[0]?.axisValue}</div>`
+        +p.map(pp=>`<div style="color:${pp.seriesIndex===0?C.amber:C.teal}">${pp.seriesName}: ${fmtBytes(pp.value)}</div>`).join('')
+    },
+    grid:{top:28,bottom:36,left:68,right:16,containLabel:false},
+    xAxis:{type:'category',data:labels,boundaryGap:false,...baseAxisOpts,
+      splitLine:{show:false},axisLabel:{...baseAxisOpts.axisLabel,interval:2}},
+    yAxis:{type:'value',...baseAxisOpts,
+      axisLabel:{...baseAxisOpts.axisLabel,formatter:v=>fmtBytesShort(v)}},
+    series:[
+      lineSeries('上行',ups,C.amber),
+      lineSeries('下行',downs,C.teal),
+    ]
+  }, true);
+}
+
+/* ═══════════════════════════════════════════════════
+   TOP IPs
+   ═══════════════════════════════════════════════════ */
+function renderTopIPs(ips) {
+  if (!ips.length) {
+    document.getElementById('top-ips-container').innerHTML =
+      '<div style="padding:20px;font-family:var(--mono);font-size:11px;color:var(--text-3)">NO DATA YET</div>';
+    return;
+  }
+  const maxB = ips[0].bytes || 1;
+  const rankClass = i => i===0?'gold':i===1?'silver':i===2?'bronze':'';
+  let html = `<table class="ip-table"><thead><tr>
+    <th>#</th><th>IP 地址</th><th style="text-align:right">流量</th><th>占比</th>
+  </tr></thead><tbody>`;
+  ips.forEach((item,i)=>{
+    const pct=Math.round(item.bytes/maxB*100);
+    html+=`<tr>
+      <td class="ip-rank ${rankClass(i)}">${i+1}</td>
+      <td class="ip-addr">${item.ip}</td>
+      <td class="ip-bytes">${item.bytes_fmt}</td>
+      <td class="ip-bar-wrap"><div class="ip-bar"><div class="ip-bar-fill" style="width:${pct}%"></div></div></td>
+    </tr>`;
+  });
+  html+='</tbody></table>';
+  document.getElementById('top-ips-container').innerHTML=html;
+}
+
+/* ═══════════════════════════════════════════════════
+   Summary cards
+   ═══════════════════════════════════════════════════ */
+function renderSummary(data) {
+  const {today, month, year} = data;
+  document.getElementById('s-today-total').textContent = today.total_fmt;
+  document.getElementById('s-today-up').textContent    = today.up_fmt;
+  document.getElementById('s-today-down').textContent  = today.down_fmt;
+  document.getElementById('s-month-total').textContent = month.total_fmt;
+  document.getElementById('s-month-up').textContent    = month.up_fmt;
+  document.getElementById('s-month-down').textContent  = month.down_fmt;
+  document.getElementById('s-year-total').textContent  = year.total_fmt;
+  document.getElementById('s-year-sub').textContent    = new Date().getFullYear() + '年累计';
+  document.getElementById('s-up2').textContent         = today.up_fmt;
+  document.getElementById('s-down2').textContent       = today.down_fmt;
+  document.getElementById('today-lbl').textContent     = new Date().toISOString().slice(0,10);
+}
+
+/* ═══════════════════════════════════════════════════
+   Realtime speed (header only)
+   ═══════════════════════════════════════════════════ */
+function renderSpeed(data) {
+  const [uv, uu] = fmtSpeed(data.current_up_bps);
+  const [dv, du] = fmtSpeed(data.current_down_bps);
+  document.getElementById('hdr-up').textContent   = uv;
+  document.getElementById('hdr-up-u').textContent = uu;
+  document.getElementById('hdr-down').textContent   = dv;
+  document.getElementById('hdr-down-u').textContent = du;
+}
+
+/* ═══════════════════════════════════════════════════
+   Data fetching & polling
+   ═══════════════════════════════════════════════════ */
+async function fetchSummary()  { const r=await fetch('/api/summary');        renderSummary(await r.json()); }
+async function fetch30days()   { const r=await fetch('/api/history/30days'); renderChart30((await r.json()).days); }
+async function fetch12months() { const r=await fetch('/api/history/12months'); renderChart12m((await r.json()).months); }
+async function fetchHours()    { const r=await fetch('/api/history/today_hours'); renderTodayHours((await r.json()).hours); }
+async function fetchTopIPs()   { const r=await fetch('/api/top_ips');        renderTopIPs((await r.json()).top_ips); }
+async function fetchRealtime() { const r=await fetch('/api/realtime');       renderSpeed(await r.json()); }
+
+function updateTs() {
+  document.getElementById('last-update').textContent =
+    'UPDATED: ' + new Date().toLocaleTimeString('zh-CN',{hour12:false});
+}
+
+/* ═══════════════════════════════════════════════════
+   Init
+   ═══════════════════════════════════════════════════ */
+async function init() {
+  // Set default date range to last 30 days
+  document.getElementById('q-start').value = daysAgo(29);
+  document.getElementById('q-end').value   = today();
+
+  // Get DB date range for min/max
+  try {
+    const dr = await (await fetch('/api/date_range')).json();
+    document.getElementById('q-start').min = dr.min;
+    document.getElementById('q-end').max   = dr.max;
+  } catch(e){}
+
+  // Initial parallel fetch
+  await Promise.all([
+    fetchSummary(), fetch30days(), fetch12months(), fetchHours(), fetchTopIPs(), fetchRealtime()
+  ]);
+  updateTs();
+
+  // Run default query (30 days)
+  await runQuery();
+}
+
+// Polling intervals
+setInterval(fetchRealtime, 3000);
+setInterval(async()=>{ await fetchSummary(); updateTs(); }, 15000);
+setInterval(async()=>{ await fetchHours(); await fetchTopIPs(); }, 30000);
+setInterval(async()=>{ await fetch30days(); await fetch12months(); }, 120000);
+
+// Resize handler
+window.addEventListener('resize', () => {
+  [chart30, chart12m, chartHours, queryChart].forEach(c => c?.resize());
+});
+
+init();
+</script>
+</body>
+</html>

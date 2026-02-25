@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  nettraffic-sentinel:
+    build: .
+    image: nettraffic-sentinel:latest
+    container_name: nettraffic-sentinel
+
+    # 必须使用 host 网络模式以直接监听物理网卡
+    network_mode: host
+
+    # 抓包需要这两个 Linux capability
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+    environment:
+      - MONITOR_IFACE=eth0              # 修改为你的网卡名
+      - EXCLUDE_IPV6_PREFIX=fe80::/10   # 多个前缀用逗号分隔，如 fe80::/10,240e:33e::/56
+      - WEB_PORT=8080
+      - SAVE_INTERVAL=300               # 每5分钟持久化一次
+      - DB_PATH=/data/traffic.db
+
+    volumes:
+      - ./data:/data                    # SQLite 数据持久化目录
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
