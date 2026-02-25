@@ -788,24 +788,35 @@ setInterval(tick,1000); tick();
 
 /* ═══════════════════════════════════════════════════
    Date helpers
+   ─────────────────────────────────────────────────
+   全部使用本地时间（getFullYear/getMonth/getDate），
+   避免 toISOString() 返回 UTC 日期在 UTC+8 等时区的
+   凌晨 0~8 点期间比本地日期少一天的问题。
    ═══════════════════════════════════════════════════ */
-function today() { return new Date().toISOString().slice(0,10); }
+function localDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function today() { return localDateStr(new Date()); }
 
 function daysAgo(n) {
-  const d=new Date(); d.setDate(d.getDate()-n);
-  return d.toISOString().slice(0,10);
+  const d = new Date(); d.setDate(d.getDate() - n);
+  return localDateStr(d);
 }
 
 function monthStart(offset=0) {
-  const d=new Date();
-  d.setDate(1); d.setMonth(d.getMonth()+offset);
-  return d.toISOString().slice(0,10);
+  const d = new Date();
+  d.setDate(1); d.setMonth(d.getMonth() + offset);
+  return localDateStr(d);
 }
 
 function monthEnd(offset=0) {
-  const d=new Date();
-  d.setDate(1); d.setMonth(d.getMonth()+1+offset); d.setDate(0);
-  return d.toISOString().slice(0,10);
+  const d = new Date();
+  d.setDate(1); d.setMonth(d.getMonth() + 1 + offset); d.setDate(0);
+  return localDateStr(d);
 }
 
 function setShortcut(key) {
@@ -1044,7 +1055,7 @@ function renderSummary(data) {
   document.getElementById('s-year-sub').textContent    = new Date().getFullYear() + '年累计';
   document.getElementById('s-up2').textContent         = today.up_fmt;
   document.getElementById('s-down2').textContent       = today.down_fmt;
-  document.getElementById('today-lbl').textContent     = new Date().toISOString().slice(0,10);
+  document.getElementById('today-lbl').textContent     = today();
 }
 
 /* ═══════════════════════════════════════════════════
