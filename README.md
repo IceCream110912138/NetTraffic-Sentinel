@@ -1,12 +1,20 @@
 # NetTraffic-Sentinel
 
-> 专为 NAS 设计的轻量级公网流量监控程序，精准统计物理网卡的纯公网上下行流量，自动过滤局域网内部流量。
+[![Docker](https://img.shields.io/badge/Docker-Supported-2496ED?style=flat-square&logo=docker)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)](https://www.python.org/)
+
+
+---
+
+> 为Linux设计的轻量级docker公网流量监控程序，精准统计物理网卡的纯公网上下行流量，自动过滤局域网内部流量。
 
 ---
 
 ## 目录
 
 - [项目简介](#项目简介)
+- [软件截图](#软件截图)
 - [功能特性](#功能特性)
 - [系统架构](#系统架构)
 - [快速开始](#快速开始)
@@ -37,6 +45,10 @@
 **NetTraffic-Sentinel** 通过直接监听物理网卡的原始数据包，逐包判断 IP 归属，只统计至少一端为公网 IP 的流量，彻底排除局域网内部互传产生的干扰数据。所有统计结果持久化到 SQLite 数据库，通过内置的 Web 仪表盘随时查看任意时间段的公网流量详情。
 
 ---
+## 软件截图
+<img width="2502" height="1255" alt="image" src="https://github.com/user-attachments/assets/a6e2257b-c67c-4a15-ae96-6515518038f0" />
+---
+
 
 ## 功能特性
 
