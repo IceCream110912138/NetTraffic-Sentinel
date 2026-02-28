@@ -5,7 +5,7 @@ api.py - Flask Web API 服务
 
 import logging
 import os
-from datetime import datetime, date, timedelta
+from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
 
 logger = logging.getLogger('sentinel.api')
@@ -36,11 +36,13 @@ def create_app(db, capture):
         month_db = db.get_month_stats()
         year_db  = db.get_year_stats()
 
-        # 叠加内存中当前未刷写的增量
-        mem   = capture.stats.hourly
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        month_str = datetime.now().strftime('%Y-%m')
-        year_str  = datetime.now().strftime('%Y')
+        # 取内存快照（线程安全），避免裸读时 flush_and_get() 并发 clear() 造成空读
+        mem       = capture.stats.get_hourly_snapshot()
+        # 严格基于容器本地时间（已由 app.py 调用 time.tzset() 激活 TZ 变量）
+        now       = datetime.now()
+        today_str = now.strftime('%Y-%m-%d')
+        month_str = now.strftime('%Y-%m')
+        year_str  = now.strftime('%Y')
 
         t_up = t_dn = m_up = m_dn = y_up = y_dn = 0
         for k, v in mem.items():
@@ -86,9 +88,10 @@ def create_app(db, capture):
         result = db.query_range(start, end, gran)
 
         # 若查询范围包含今天，叠加内存增量到今天那条
-        today_str = date.today().strftime('%Y-%m-%d')
+        # 使用 datetime.now() 而非 date.today()，两者在 tzset() 后等价，但保持一致性
+        today_str = datetime.now().strftime('%Y-%m-%d')
         if start <= today_str <= end and gran == 'day':
-            mem   = capture.stats.hourly
+            mem   = capture.stats.get_hourly_snapshot()  # 线程安全快照
             mem_u = mem_d = 0
             for k, v in mem.items():
                 if k.startswith(today_str):

@@ -16,7 +16,8 @@ services:
 
     environment:
       - MONITOR_IFACE=eth0              # 修改为你的网卡名
-      - EXCLUDE_IPV6_PREFIX=fe80::/10   # 多个前缀用逗号分隔，如 fe80::/10,240e:33e::/56
+      - TZ=Asia/Shanghai                # 时区：影响今日/本月统计的日期归属，必须与你所在时区一致
+      - EXCLUDE_IPV6_PREFIX=            # 留空则自动检测 GUA /56；手动指定示例：240e:33e:2f08:d600::/56
       - WEB_PORT=8080
       - SAVE_INTERVAL=300               # 每5分钟持久化一次
       - DB_PATH=/data/traffic.db

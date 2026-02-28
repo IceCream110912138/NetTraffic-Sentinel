@@ -258,6 +258,13 @@ class TrafficStats:
             self.hourly.clear()
             return data
 
+    def get_hourly_snapshot(self) -> Dict[str, Dict]:
+        """返回当前内存流量数据的线程安全深拷贝快照。
+        直接读 self.hourly 会与 flush_and_get() 的 clear() 产生竞态（读到被并发清空的空字典），
+        此方法在持锁状态下复制数据，确保安全且不影响持久化线程。"""
+        with self._lock:
+            return {k: dict(v) for k, v in self.hourly.items()}
+
 
 # ── 抓包核心 ──────────────────────────────────────────────────────────────────
 
