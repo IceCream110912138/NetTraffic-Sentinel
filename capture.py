@@ -73,6 +73,7 @@ SOCKET_RCVBUF_SIZE = 32 * 1024 * 1024
 # 生产者-消费者队列容量（包数）：限制内存占用，队列满时丢弃并计数
 # BT 同时数百连接时瞬时包速率可达数万 pkt/s
 PACKET_QUEUE_MAXSIZE = 50000
+PROCESSOR_BATCH_SIZE = 256
 
 # 内核丢包监控间隔（秒）
 KERNEL_DROP_MONITOR_INTERVAL = 60
@@ -84,7 +85,17 @@ PKT_RATE_LOG_INTERVAL = 60
 ETH_P_IP   = 0x0800   # IPv4
 ETH_P_IPV6 = 0x86DD   # IPv6
 ETH_P_8021Q = 0x8100  # 802.1Q VLAN tag
+ETH_P_8021AD = 0x88A8  # 802.1ad QinQ VLAN tag
+ETH_P_9100 = 0x9100    # vendor-specific QinQ
+ETH_P_9200 = 0x9200    # vendor-specific QinQ
 ETH_P_ALL  = 0x0003   # 抓所有协议（htons 后使用）
+
+VLAN_ETHERTYPES = {
+    ETH_P_8021Q,
+    ETH_P_8021AD,
+    ETH_P_9100,
+    ETH_P_9200,
+}
 
 # ── IPv4 私有网段 ─────────────────────────────────────────────────────────────
 PRIVATE_IPV4_NETWORKS = [
@@ -113,6 +124,24 @@ _PRIVATE_V4_RANGES = [
 ]
 
 
+def _ipv6_mask(prefix_len: int) -> int:
+    if prefix_len <= 0:
+        return 0
+    return ((1 << prefix_len) - 1) << (128 - prefix_len)
+
+
+def _compile_ipv6_network_matchers(
+    networks: List[ipaddress.IPv6Network],
+) -> Tuple[Tuple[int, int], ...]:
+    return tuple(
+        (int(net.network_address), _ipv6_mask(net.prefixlen))
+        for net in networks
+    )
+
+
+_BUILTIN_IPV6_MATCHERS = _compile_ipv6_network_matchers(BUILTIN_IPV6_EXCLUDE)
+
+
 # ── 快速 IP 分类函数（避免 ipaddress 对象构建开销）──────────────────────────
 
 def _is_private_v4_int(ip_int: int) -> bool:
@@ -120,10 +149,28 @@ def _is_private_v4_int(ip_int: int) -> bool:
     return any(lo <= ip_int <= hi for lo, hi in _PRIVATE_V4_RANGES)
 
 
-def _ipv6_bytes_is_excluded(addr_bytes: bytes, extra_nets: List[ipaddress.IPv6Network]) -> bool:
-    """判断 16 字节的 IPv6 地址是否属于需排除的网段"""
-    addr = ipaddress.ip_address(addr_bytes)
-    return any(addr in net for net in BUILTIN_IPV6_EXCLUDE + extra_nets)
+def _ipv6_int_matches(addr_int: int, matchers: Tuple[Tuple[int, int], ...]) -> bool:
+    """用 network_int + mask 判断 IPv6 地址是否匹配网段"""
+    return any((addr_int & mask) == network for network, mask in matchers)
+
+
+def _ipv6_int_is_excluded(
+    addr_int: int,
+    extra_matchers: Tuple[Tuple[int, int], ...],
+) -> bool:
+    """判断 IPv6 地址是否属于内置/额外排除网段"""
+    return (
+        _ipv6_int_matches(addr_int, _BUILTIN_IPV6_MATCHERS)
+        or _ipv6_int_matches(addr_int, extra_matchers)
+    )
+
+
+def _format_ipv6(addr_bytes: bytes) -> str:
+    """使用 C 层序列化 IPv6，减少 ipaddress 对象构建开销"""
+    try:
+        return socket.inet_ntop(socket.AF_INET6, addr_bytes)
+    except (AttributeError, OSError):
+        return str(ipaddress.ip_address(addr_bytes))
 
 
 # ── 本机 IP 检测 ──────────────────────────────────────────────────────────────
@@ -356,7 +403,10 @@ class PacketCapture:
         self._local_ips_lock = threading.RLock()
         # 同时缓存为整数/bytes 格式用于高速比较
         self._local_v4_ints: Set[int] = set()
-        self._local_v6_bytes: Set[bytes] = set()
+        self._local_v6_ints: Set[int] = set()
+        self._lan_prefix_matchers: Tuple[Tuple[int, int], ...] = _compile_ipv6_network_matchers(
+            self._lan_prefixes
+        )
         self._refresh_local_ips()   # 启动时立即执行一次（含 /56 自动检测）
 
         self._refresh_thread = threading.Thread(
@@ -402,14 +452,14 @@ class PacketCapture:
 
         # 同时构建整数/bytes 缓存，供抓包回调高速查找
         new_v4_ints: Set[int] = set()
-        new_v6_bytes: Set[bytes] = set()
+        new_v6_ints: Set[int] = set()
         for ip_str in new_ips:
             try:
                 addr = ipaddress.ip_address(ip_str)
                 if addr.version == 4:
                     new_v4_ints.add(int(addr))
                 else:
-                    new_v6_bytes.add(addr.packed)
+                    new_v6_ints.add(int(addr))
             except ValueError:
                 pass
 
@@ -417,7 +467,7 @@ class PacketCapture:
             old_ips = self._local_ips
             self._local_ips = new_ips
             self._local_v4_ints = new_v4_ints
-            self._local_v6_bytes = new_v6_bytes
+            self._local_v6_ints = new_v6_ints
 
         added   = new_ips - old_ips
         removed = old_ips - new_ips
@@ -452,6 +502,7 @@ class PacketCapture:
             # 原地替换列表内容，_extra_ipv6 共享同一对象，无需额外同步
             self._lan_prefixes.clear()
             self._lan_prefixes.extend(new_prefixes)
+            self._lan_prefix_matchers = _compile_ipv6_network_matchers(self._lan_prefixes)
 
         if new_prefixes:
             logger.info(
@@ -501,7 +552,7 @@ class PacketCapture:
         with self._local_ips_lock:
             return ip_int in self._local_v4_ints
 
-    def _is_local_v6(self, addr_bytes: bytes) -> bool:
+    def _is_local_v6(self, addr_int: int) -> bool:
         """
         IPv6：
           - 链路本地/ULA/组播/loopback → True（本地侧）
@@ -511,23 +562,23 @@ class PacketCapture:
         """
         # 先快速检查是否在本机列表（最常见的 NAS 自身 IPv6）
         with self._local_ips_lock:
-            if addr_bytes in self._local_v6_bytes:
+            if addr_int in self._local_v6_ints:
                 return True
+            lan_prefix_matchers = self._lan_prefix_matchers
         # 再检查保留/私有网段（BUILTIN）以及 LAN /56 前缀
-        return _ipv6_bytes_is_excluded(addr_bytes, self._extra_ipv6)
+        return _ipv6_int_is_excluded(addr_int, lan_prefix_matchers)
 
-    def _is_in_lan_prefix(self, addr_bytes: bytes) -> bool:
+    def _is_in_lan_prefix(self, addr_int: int) -> bool:
         """
         判断一个 IPv6 地址是否属于当前检测到的 LAN 前缀（/56 或手动指定前缀）。
         用于双端检查：src 和 dst 同时在 LAN 前缀内 → 局域网内部流量，应忽略。
         只检查 _lan_prefixes，不包含 BUILTIN_IPV6_EXCLUDE。
         """
         with self._local_ips_lock:
-            prefixes = list(self._lan_prefixes)  # 快照，避免持锁过久
-        if not prefixes:
+            matchers = self._lan_prefix_matchers
+        if not matchers:
             return False
-        addr = ipaddress.ip_address(addr_bytes)
-        return any(addr in net for net in prefixes)
+        return _ipv6_int_matches(addr_int, matchers)
 
     # ── 实时速率采样 ──────────────────────────────────────────────────────────
 
@@ -641,9 +692,16 @@ class PacketCapture:
 
         while True:
             try:
-                frame, ts = self._pkt_queue.get(timeout=1.0)
-                self._parse_frame(frame, ts)
-                pkt_count += 1
+                batch = [self._pkt_queue.get(timeout=1.0)]
+                while len(batch) < PROCESSOR_BATCH_SIZE:
+                    try:
+                        batch.append(self._pkt_queue.get_nowait())
+                    except queue.Empty:
+                        break
+
+                for frame, ts in batch:
+                    self._parse_frame(frame, ts)
+                pkt_count += len(batch)
 
                 # 定期打印速率诊断
                 now = time.time()
@@ -677,7 +735,14 @@ class PacketCapture:
         if len(data) < 20:  # IPv4 头最小 20 字节
             return
 
+        ihl = (data[0] & 0x0F) * 4
+        if ihl < 20 or len(data) < ihl:
+            return
+
         ip_len = struct.unpack_from('!H', data, 2)[0]   # total length（含 IP 头）
+        if ip_len < ihl or ip_len > len(data):
+            return
+
         src_int = struct.unpack_from('!I', data, 12)[0]  # src addr as uint32
         dst_int = struct.unpack_from('!I', data, 16)[0]  # dst addr as uint32
 
@@ -716,18 +781,22 @@ class PacketCapture:
 
         payload_len = struct.unpack_from('!H', data, 4)[0]  # payload length
         ip_len = 40 + payload_len  # IPv6 total = 40B header + payload
+        if ip_len > len(data):
+            return
 
         src_bytes = data[8:24]    # src addr (16 bytes)
         dst_bytes = data[24:40]   # dst addr (16 bytes)
+        src_int = int.from_bytes(src_bytes, 'big')
+        dst_int = int.from_bytes(dst_bytes, 'big')
 
         # ── 第一关：双端 LAN 前缀检测（优先执行，开销最低）──────────────
         # 若 src 和 dst 同时属于 LAN /56 前缀 → 局域网内部流量，直接丢弃
-        if self._is_in_lan_prefix(src_bytes) and self._is_in_lan_prefix(dst_bytes):
+        if self._is_in_lan_prefix(src_int) and self._is_in_lan_prefix(dst_int):
             return
 
         # ── 第二关：方向判定 ─────────────────────────────────────────────
-        src_local = self._is_local_v6(src_bytes)
-        dst_local = self._is_local_v6(dst_bytes)
+        src_local = self._is_local_v6(src_int)
+        dst_local = self._is_local_v6(dst_int)
 
         if src_local and dst_local:
             return  # 本地/内网互传（链路本地等），忽略
@@ -736,17 +805,17 @@ class PacketCapture:
 
         if src_local:
             # NAS 发出（如：向公网服务器上传）→ 上行，remote = dst
-            remote = str(ipaddress.ip_address(dst_bytes))
+            remote = _format_ipv6(dst_bytes)
             self.stats.add_bytes('up', ip_len, remote, ts)
         else:
             # NAS 收到（如：从公网下载）→ 下行，remote = src
-            remote = str(ipaddress.ip_address(src_bytes))
+            remote = _format_ipv6(src_bytes)
             self.stats.add_bytes('down', ip_len, remote, ts)
 
     def _parse_frame(self, frame: bytes, ts: float):
         """
         解析一个以太网帧，提取 IP/IPv6 层并分发处理。
-        支持 802.1Q VLAN tag（跳过 4 字节 tag）。
+        支持 802.1Q / 802.1ad / QinQ 多层 VLAN tag。
         """
         if len(frame) < 14:
             return
@@ -754,12 +823,12 @@ class PacketCapture:
         ethertype = struct.unpack_from('!H', frame, 12)[0]
         payload_offset = 14
 
-        # 处理 802.1Q VLAN tag（跳过 4 字节）
-        if ethertype == ETH_P_8021Q:
-            if len(frame) < 18:
+        # 处理 802.1Q / 802.1ad / QinQ 多层 VLAN tag
+        while ethertype in VLAN_ETHERTYPES:
+            if len(frame) < payload_offset + 4:
                 return
-            ethertype = struct.unpack_from('!H', frame, 16)[0]
-            payload_offset = 18
+            ethertype = struct.unpack_from('!H', frame, payload_offset + 2)[0]
+            payload_offset += 4
 
         if ethertype == ETH_P_IP:
             self._handle_ipv4(frame[payload_offset:], ts)
@@ -899,3 +968,8 @@ class PacketCapture:
     def socket_buffer_actual_kb(self) -> int:
         """实际生效的 socket 接收缓冲区大小（KB），0 表示 socket 尚未创建。"""
         return self._socket_buffer_actual_kb
+
+    @property
+    def queue_drops_total(self) -> int:
+        """用户态队列因堆积而主动丢弃的包数"""
+        return self._queue_drop_count

@@ -111,6 +111,9 @@
 - 使用 `AF_PACKET/SOCK_RAW` 原始套接字替代 Scapy，单包处理时间从 ~50μs 降至 ~2μs，大幅减少高流量下的丢包
 - 统计字节数取 IP 协议头声明的 `total length` 字段，而非以太网帧长度，排除链路层开销干扰
 - 内核接收缓冲区设为 32MB（默认仅 2MB），减少高速传输时的环形缓冲区溢出
+- 包处理线程按批次消费队列，降低高并发下 `Queue.get()` / 线程切换开销，进一步减少用户态堆积导致的漏记
+- IPv6 LAN 过滤改为预编译前缀匹配，热路径不再频繁构建 `ipaddress` 对象，高流量场景更稳定
+- 支持 `802.1Q`、`802.1ad`（QinQ）和部分运营商常见 VLAN 封装，避免带标签链路被漏统
 - 容器启动时自动通过 `ethtool` 禁用网卡 GRO/LRO/TSO，避免硬件聚合导致的包计数失真
 
 **多维度数据存储**
@@ -725,8 +728,19 @@ curl "http://nas-ip:8080/api/query?start=2024-01-01&end=2024-12-31&granularity=m
 
 健康检查接口，供 Docker healthcheck 使用。时间戳使用容器本地时间（跟随 `TZ` 环境变量）。
 
+除基础存活信息外，还会暴露两个与统计精度直接相关的诊断指标：
+
+- `kernel_drops_last_60s`：最近 60 秒内核接收队列丢包增量
+- `queue_drops_total`：用户态解析队列主动丢弃的总包数，持续增长说明抓包线程收到了包，但解析线程跟不上
+
 ```json
-{ "status": "ok", "ts": "2026-02-26T10:30:00.234567" }
+{
+  "status": "ok",
+  "ts": "2026-02-26T10:30:00.234567",
+  "kernel_drops_last_60s": 0,
+  "socket_buffer_actual_kb": 65536,
+  "queue_drops_total": 0
+}
 ```
 
 ---
@@ -912,6 +926,15 @@ while running:
 - 内核接收缓冲区从默认 2MB 扩大到 32MB，缓冲区溢出概率大幅下降
 - 同时在内核层将 `net.core.rmem_max` 设为 64MB，解除操作系统限制
 
+**修复二补强：继续压缩热路径开销**
+
+- IPv6 本机地址和 `/56` LAN 前缀在刷新时就预编译成整数掩码，抓包热路径只做位运算匹配
+- 远端 IPv6 地址优先用 `socket.inet_ntop()` 序列化，减少 `ipaddress.ip_address()` 对象构建
+- 包处理线程改成**批量消费**队列，降低高包速率下的队列调度与 Python 调用开销
+- 对 IPv4 `IHL`、IPv4/IPv6 `total length` 增加边界校验，避免异常/截断帧把统计拉偏
+
+这些改动的目标不是改变统计口径，而是让高流量场景下“该记到的包更少漏掉”。
+
 **修复三：容器启动时禁用网卡 Offload**
 
 `entrypoint.sh` 启动时通过 `ethtool` 禁用 GRO/LRO/TSO/GSO：
@@ -921,6 +944,10 @@ ethtool -K eth0 gro off lro off tso off gso off
 ```
 
 禁用后，每个 IP 报文独立经过协议栈和 raw socket，统计与实际传输字节数一致。对 NAS CPU 占用影响通常小于 5%。
+
+**修复四：补齐带 VLAN 标签链路的协议识别**
+
+不少 NAS、软路由和运营商接入环境会在物理口上打 `802.1Q` 或 `802.1ad` 标签。如果抓包程序只识别单层普通以太网帧，就会把这部分公网流量当成“未知协议”直接跳过。现在解析器支持多层 VLAN tag 递进剥离，能正确继续识别后续的 IPv4 / IPv6 负载。
 
 ---
 
@@ -941,6 +968,8 @@ nettraffic-sentinel/
 ├── requirements.txt    # Python 依赖：flask、scapy（备用）、netifaces
 ├── Dockerfile          # 镜像：python:3.11-slim + ethtool + iproute2 + tzdata
 ├── docker-compose.yml  # 一键部署配置
+├── tests/
+│   └── test_capture.py # 回归测试：IPv4 计数、IPv6 LAN 过滤、堆叠 VLAN 解析
 └── README.md           # 本文档
 ```
 
@@ -1005,6 +1034,12 @@ docker compose down && docker compose up -d --build
 3. 握手、ACK 等控制包也会被计入，这部分在大文件传输中占比较小
 
 若偏差超过 20%，请检查 `ethtool -k eth0 | grep offload` 确认 GRO/LRO 是否已成功禁用。
+
+如果偏差主要发生在高带宽下载、BT、网盘回源这类高包速率场景，再额外检查：
+
+1. 访问 `/api/health`，确认 `kernel_drops_last_60s` 是否长期大于 0
+2. 查看 `queue_drops_total` 是否持续增长；如果增长，说明用户态解析已成为瓶颈
+3. 检查宿主机是否把公网链路跑在 VLAN / QinQ 上；旧版本会漏掉这类流量，新版本已支持
 
 ---
 

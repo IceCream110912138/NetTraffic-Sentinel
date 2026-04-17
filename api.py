@@ -170,6 +170,8 @@ def create_app(db, capture):
             'kernel_drops_last_60s': capture.kernel_drops_last_60s,
             # 实际生效的 socket 接收缓冲区（KB），低于 16384 时 BT 高并发易丢包
             'socket_buffer_actual_kb': capture.socket_buffer_actual_kb,
+            # 用户态解析队列主动丢弃的总包数，持续增长说明解析跟不上收包速度
+            'queue_drops_total': capture.queue_drops_total,
         })
 
 
