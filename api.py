@@ -21,6 +21,79 @@ def fmt_bytes(b: int) -> str:
     return f"{b:.2f} PB"
 
 
+def _memory_hour_rows(capture, start: str, end: str) -> list[dict]:
+    """Return unflushed in-memory hourly rows inside an inclusive date range."""
+    rows = []
+    for hour_ts, stats in capture.stats.get_hourly_snapshot().items():
+        day = hour_ts[:10]
+        if start <= day <= end:
+            up = stats.get('up', 0) or 0
+            down = stats.get('down', 0) or 0
+            rows.append({
+                'hour_ts': hour_ts,
+                'up_bytes': up,
+                'down_bytes': down,
+                'total_bytes': up + down,
+            })
+    return rows
+
+
+def _merge_memory_rows(result: dict, capture, start: str, end: str, granularity: str) -> None:
+    """Merge current in-memory counters into a database-backed query result."""
+    memory_rows = _memory_hour_rows(capture, start, end)
+    if not memory_rows:
+        return
+
+    if granularity == 'hour':
+        key_name = 'hour_ts'
+        buckets = {row['hour_ts']: row for row in result['series']}
+        for row in memory_rows:
+            bucket = buckets.setdefault(row['hour_ts'], {
+                'hour_ts': row['hour_ts'],
+                'up_bytes': 0,
+                'down_bytes': 0,
+                'total_bytes': 0,
+            })
+            bucket['up_bytes'] += row['up_bytes']
+            bucket['down_bytes'] += row['down_bytes']
+            bucket['total_bytes'] = bucket['up_bytes'] + bucket['down_bytes']
+        result['series'] = sorted(buckets.values(), key=lambda row: row[key_name])
+    elif granularity == 'month':
+        buckets = {row['month']: row for row in result['series']}
+        for row in memory_rows:
+            month = row['hour_ts'][:7]
+            bucket = buckets.setdefault(month, {
+                'month': month,
+                'up_bytes': 0,
+                'down_bytes': 0,
+                'total_bytes': 0,
+            })
+            bucket['up_bytes'] += row['up_bytes']
+            bucket['down_bytes'] += row['down_bytes']
+            bucket['total_bytes'] = bucket['up_bytes'] + bucket['down_bytes']
+        result['series'] = sorted(buckets.values(), key=lambda row: row['month'])
+    else:
+        buckets = {row['day']: row for row in result['series']}
+        for row in memory_rows:
+            day = row['hour_ts'][:10]
+            bucket = buckets.setdefault(day, {
+                'day': day,
+                'up_bytes': 0,
+                'down_bytes': 0,
+                'total_bytes': 0,
+            })
+            bucket['up_bytes'] += row['up_bytes']
+            bucket['down_bytes'] += row['down_bytes']
+            bucket['total_bytes'] = bucket['up_bytes'] + bucket['down_bytes']
+        result['series'] = sorted(buckets.values(), key=lambda row: row['day'])
+
+    mem_up = sum(row['up_bytes'] for row in memory_rows)
+    mem_down = sum(row['down_bytes'] for row in memory_rows)
+    result['summary']['up_bytes'] += mem_up
+    result['summary']['down_bytes'] += mem_down
+    result['summary']['total_bytes'] += mem_up + mem_down
+
+
 def create_app(db, capture):
     app = Flask(__name__, static_folder='static')
     app.config['JSON_SORT_KEYS'] = False
@@ -82,30 +155,13 @@ def create_app(db, capture):
             datetime.strptime(end,   '%Y-%m-%d')
         except ValueError:
             return jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+        if start > end:
+            return jsonify({'error': 'start must be earlier than or equal to end'}), 400
         if gran not in ('hour', 'day', 'month'):
             gran = 'day'
 
         result = db.query_range(start, end, gran)
-
-        # 若查询范围包含今天，叠加内存增量到今天那条
-        # 使用 datetime.now() 而非 date.today()，两者在 tzset() 后等价，但保持一致性
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        if start <= today_str <= end and gran == 'day':
-            mem   = capture.stats.get_hourly_snapshot()  # 线程安全快照
-            mem_u = mem_d = 0
-            for k, v in mem.items():
-                if k.startswith(today_str):
-                    mem_u += v['up']; mem_d += v['down']
-            if mem_u or mem_d:
-                for row in result['series']:
-                    if row.get('day') == today_str:
-                        row['up_bytes']    = (row.get('up_bytes')    or 0) + mem_u
-                        row['down_bytes']  = (row.get('down_bytes')  or 0) + mem_d
-                        row['total_bytes'] = row['up_bytes'] + row['down_bytes']
-                        break
-                result['summary']['up_bytes']    += mem_u
-                result['summary']['down_bytes']  += mem_d
-                result['summary']['total_bytes'] += mem_u + mem_d
+        _merge_memory_rows(result, capture, start, end, gran)
 
         # 格式化 summary
         s = result['summary']
@@ -129,7 +185,19 @@ def create_app(db, capture):
     # ── 今日24小时分布 ────────────────────────────────────────────────────────
     @app.route('/api/history/today_hours')
     def api_today_hours():
-        hours = db.get_hourly_today()
+        today = datetime.now().strftime('%Y-%m-%d')
+        result = {
+            'summary': {'up_bytes': 0, 'down_bytes': 0, 'total_bytes': 0},
+            'series': db.get_hourly_today(),
+        }
+        for row in result['series']:
+            result['summary']['up_bytes'] += row.get('up_bytes', 0) or 0
+            result['summary']['down_bytes'] += row.get('down_bytes', 0) or 0
+            result['summary']['total_bytes'] += (
+                (row.get('up_bytes', 0) or 0) + (row.get('down_bytes', 0) or 0)
+            )
+        _merge_memory_rows(result, capture, today, today, 'hour')
+        hours = result['series']
         return jsonify({'hours': hours})
 
     # ── 数据库可用日期范围 ─────────────────────────────────────────────────────

@@ -1,10 +1,14 @@
 import ipaddress
+import os
 import socket
 import struct
 import threading
 import unittest
+import tempfile
 
+from api import create_app
 from capture import PacketCapture, TrafficStats, _compile_ipv6_network_matchers
+from database import Database
 
 
 def build_ipv4_frame(src_ip: str, dst_ip: str, payload_len: int = 100, vlan_tags=()) -> bytes:
@@ -110,6 +114,56 @@ class PacketCaptureTests(unittest.TestCase):
         stats = next(iter(hourly.values()))
         self.assertEqual(stats["down"], 84)
         self.assertEqual(stats["up"], 0)
+
+
+class ApiAndDatabaseTests(unittest.TestCase):
+    def test_database_accepts_relative_file_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                db = Database("traffic.db")
+                db.init_schema()
+                db.commit_stats({"2026-06-01 12:00:00": {"up": 10, "down": 20}})
+                self.assertTrue(os.path.exists("traffic.db"))
+                rows = db.query_range("2026-06-01", "2026-06-01", "hour")["series"]
+                self.assertEqual(rows[0]["total_bytes"], 30)
+            finally:
+                os.chdir(cwd)
+
+    def test_query_rejects_reversed_date_range(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(os.path.join(tmpdir, "traffic.db"))
+            db.init_schema()
+            capture = make_capture()
+            client = create_app(db, capture).test_client()
+
+            response = client.get("/api/query?start=2026-06-02&end=2026-06-01")
+
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("start must be earlier", response.get_json()["error"])
+
+    def test_query_merges_unflushed_memory_for_hour_granularity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(os.path.join(tmpdir, "traffic.db"))
+            db.init_schema()
+            db.commit_stats({"2026-06-01 12:00:00": {"up": 100, "down": 50}})
+            capture = make_capture()
+            capture.stats.hourly["2026-06-01 12:00:00"]["up"] = 25
+            capture.stats.hourly["2026-06-01 13:00:00"]["down"] = 75
+            client = create_app(db, capture).test_client()
+
+            response = client.get(
+                "/api/query?start=2026-06-01&end=2026-06-01&granularity=hour"
+            )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["summary"]["up_bytes"], 125)
+            self.assertEqual(payload["summary"]["down_bytes"], 125)
+            rows = {row["hour_ts"]: row for row in payload["series"]}
+            self.assertEqual(rows["2026-06-01 12:00:00"]["total_bytes"], 175)
+            self.assertEqual(rows["2026-06-01 13:00:00"]["total_bytes"], 75)
 
 
 if __name__ == "__main__":

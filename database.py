@@ -7,8 +7,9 @@ import sqlite3
 import logging
 import os
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, date
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 def _local_now_str() -> str:
@@ -55,7 +56,9 @@ class Database:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._lock = threading.Lock()
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -64,9 +67,17 @@ class Database:
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
+    @contextmanager
+    def _connect(self):
+        conn = self._get_conn()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def init_schema(self):
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 conn.executescript(SCHEMA)
         logger.info(f"Database initialized: {self.db_path}")
 
@@ -75,7 +86,7 @@ class Database:
             return
         now_str = _local_now_str()          # 统一用 Python 本地时间，严格跟随 TZ 变量
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 for hour_ts, stats in hourly_data.items():
                     conn.execute("""
                         INSERT INTO traffic_hourly (hour_ts, up_bytes, down_bytes, created_at, updated_at)
@@ -95,7 +106,7 @@ class Database:
     def get_month_stats(self) -> Dict:
         month = datetime.now().strftime('%Y-%m')
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 row = conn.execute(
                     "SELECT up_bytes,down_bytes,total_bytes FROM traffic_monthly WHERE month=?",
                     (month,)).fetchone()
@@ -104,7 +115,7 @@ class Database:
     def get_year_stats(self) -> Dict:
         year = datetime.now().strftime('%Y')
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 row = conn.execute("""
                     SELECT SUM(up_bytes) AS up_bytes,
                            SUM(down_bytes) AS down_bytes,
@@ -129,7 +140,7 @@ class Database:
             months.append(f"{year:04d}-{month:02d}")
         placeholders = ','.join(['?' for _ in months])
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 rows = conn.execute(
                     f"SELECT month,up_bytes,down_bytes,total_bytes FROM traffic_monthly "
                     f"WHERE month IN ({placeholders})", months).fetchall()
@@ -161,7 +172,7 @@ class Database:
 
     def _day_stats(self, day: str) -> Dict:
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 row = conn.execute(
                     "SELECT up_bytes,down_bytes,total_bytes FROM traffic_daily WHERE day=?",
                     (day,)).fetchone()
@@ -169,7 +180,7 @@ class Database:
 
     def _hourly_range(self, start: str, end: str) -> List[Dict]:
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 rows = conn.execute("""
                     SELECT hour_ts, up_bytes, down_bytes, (up_bytes+down_bytes) AS total_bytes
                     FROM traffic_hourly
@@ -180,7 +191,7 @@ class Database:
 
     def _daily_range(self, start: str, end: str, fill: bool = False) -> List[Dict]:
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 rows = conn.execute("""
                     SELECT day, up_bytes, down_bytes, total_bytes
                     FROM traffic_daily WHERE day >= ? AND day <= ? ORDER BY day
@@ -200,7 +211,7 @@ class Database:
     def _monthly_range(self, start: str, end: str) -> List[Dict]:
         start_m, end_m = start[:7], end[:7]
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 rows = conn.execute("""
                     SELECT month, up_bytes, down_bytes, total_bytes
                     FROM traffic_monthly WHERE month >= ? AND month <= ? ORDER BY month
@@ -209,7 +220,7 @@ class Database:
 
     def get_available_date_range(self) -> Dict:
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 row = conn.execute("""
                     SELECT MIN(substr(hour_ts,1,10)) AS min_day,
                            MAX(substr(hour_ts,1,10)) AS max_day
@@ -223,7 +234,7 @@ class Database:
     def get_hourly_today(self) -> List[Dict]:
         today = datetime.now().strftime('%Y-%m-%d')
         with self._lock:
-            with self._get_conn() as conn:
+            with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT hour_ts,up_bytes,down_bytes FROM traffic_hourly "
                     "WHERE hour_ts LIKE ? ORDER BY hour_ts",
